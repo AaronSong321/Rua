@@ -1,0 +1,81 @@
+use std::str::FromStr;
+use crate::ast::*;
+use crate::err::*;
+use lalrpop_util::*;
+
+grammar<'err>(diags: &'err mut Vec<ErrorRecovery<usize, Token<'input>, CalculatorError>>);
+
+extern {
+    type Error = CalculatorError;
+}
+
+match {
+    "+",
+    "*",
+    "//",
+    "local" => K_LOCAL,
+    "function" => K_FUNCTION,
+    "end" => K_END,
+    "=",
+    ",",
+    r"[0-9]+" => T_NUM,
+} else {
+    r"\w+" => ID,
+    _
+}
+
+pub Expr: Expr<'input> = {
+    <l:Expr> "+" <r:MulExpr> => Expr::Op(Box::new(l), Opcode::Add, Box::new(r)),
+    MulExpr => <>,
+};
+MulExpr: Expr<'input> = {
+    <l:MulExpr> "*" <r:PrimExpr> => Expr::Op(Box::new(l), Opcode::Mul, Box::new(r)),
+    PostExpr => <>,
+};
+PostExpr: Expr<'input> = {
+    <l:PrimExpr> "(" <e:ExprList?> ")" => match e {
+        Some(li) => Expr::Call(Box::new(l), li),
+        None => Expr::Call(Box::new(l), Vec::new()),
+    },
+    PrimExpr => <>,
+}
+PrimExpr: Expr<'input> = {
+    Num => <>,
+    ID => Expr::Id(<>),
+    "(" <e:Expr> ")" => Expr::Paren(Box::new(e)),
+};
+
+Num: Expr<'input> = {
+    T_NUM => match i32::from_str(<>) {
+        Ok(n) => Expr::Num(n),
+        Err(n) => Expr::ErrorExpr
+    }
+};
+
+ExprList: Vec<Expr<'input>> = {
+    <mut l:(Expr ",")*> <r:Expr> => {
+        l.push((r, ""));
+        l.into_iter().map(|p| p.0).collect()
+    }
+}
+
+VarList: Vec<LocalVar<'input>> = {
+    <mut l:(ID ",")*> <r:ID> => {
+        l.push((r, ""));
+        l.into_iter().map(|p| LocalVar { id: p.0 }).collect()
+    }
+}
+
+pub Smt: Smt<'input> = {
+    K_LOCAL <vars:VarList> "=" <exprs:ExprList> => Smt::LocalVarDecl(vars, Some(exprs))
+};
+
+pub Chunk: Chunk<'input> = {
+    Smt* => Chunk::new(<>)
+};
+
+pub FunExpr: FunExpr<'input> = {
+    K_FUNCTION <name:ID> "(" <v:VarList> ")" <body:Chunk> K_END => {
+        FunExpr::new(name, v, body)
+    }
+}
